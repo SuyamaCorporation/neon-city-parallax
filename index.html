@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ネオン都市 パラレックス</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-950 text-gray-100">
+<div class="flex flex-col items-center p-4 min-h-screen">
+  <h1 class="text-2xl font-bold text-center mb-2 text-pink-400">🌆 ネオン都市 パラレックス</h1>
+  <p class="text-center text-gray-400 text-sm mb-3">サイバーパンク風ネオン街 — マウスで視差体験</p>
+  <canvas id="cityCanvas" width="780" height="440" class="rounded-lg border border-pink-900 shadow-2xl shadow-pink-950 w-full max-w-3xl"></canvas>
+  <div class="flex gap-3 mt-3 flex-wrap justify-center">
+    <button id="playBtn"
+      class="px-5 py-2 bg-pink-700 hover:bg-pink-600 rounded font-bold"
+      aria-label="アニメーション再生/停止">⏸ 停止</button>
+    <div class="flex items-center gap-2">
+      <label for="speedRange" class="text-sm text-gray-400">速度</label>
+      <input type="range" id="speedRange" min="0.2" max="4" step="0.2" value="1.0"
+        class="w-24 accent-pink-400" aria-label="スクロール速度">
+    </div>
+    <div class="flex items-center gap-2">
+      <label for="rainToggle" class="text-sm text-gray-400">雨</label>
+      <input type="checkbox" id="rainToggle" checked class="accent-pink-400" aria-label="雨エフェクト切替">
+    </div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('cityCanvas');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+let paused = false;
+let speed = 1.0;
+let rainEnabled = true;
+let mouseX = W / 2;
+let time = 0;
+
+// === Rain particles ===
+const RAIN_COUNT = 180;
+const rainDrops = Array.from({length: RAIN_COUNT}, () => ({
+  x: Math.random() * W,
+  y: Math.random() * H,
+  len: 8 + Math.random() * 15,
+  speed: 8 + Math.random() * 8,
+  alpha: 0.3 + Math.random() * 0.4
+}));
+
+// === Neon signs ===
+const SIGNS = ['CYBER','NEON','CLUB','BAR','24H','OPEN','RAMEN','SUSHI','TOKYO','2099',
+  'HOLO','VR','ZONE','CAFE','HOTEL','SHOP'];
+const SIGN_COLORS = ['#ff00ff','#00ffff','#ff6600','#ff0066','#00ff99','#ff33ff','#33ccff','#ffcc00'];
+
+// Background buildings (far)
+const BG_BUILDINGS = [];
+for (let i = 0; i < 14; i++) {
+  BG_BUILDINGS.push({
+    x: (W / 12) * i,
+    w: 40 + Math.random() * 50,
+    h: 80 + Math.random() * 160,
+    color: `hsl(${220 + Math.random() * 40},30%,${8 + Math.random() * 8}%)`
+  });
+}
+
+// Mid buildings
+const MID_BUILDINGS = [];
+for (let i = 0; i < 10; i++) {
+  const w = 55 + Math.random() * 80;
+  MID_BUILDINGS.push({
+    x: (W / 9) * i - 20,
+    w,
+    h: 110 + Math.random() * 200,
+    color: `hsl(${240 + Math.random() * 40},25%,${12 + Math.random() * 10}%)`,
+    signs: Array.from({length: 1 + Math.floor(Math.random()*3)}, () => ({
+      text: SIGNS[Math.floor(Math.random()*SIGNS.length)],
+      color: SIGN_COLORS[Math.floor(Math.random()*SIGN_COLORS.length)],
+      y: Math.random() * 0.7,
+    }))
+  });
+}
+
+// Windows
+function drawWindows(x, y, w, h, density, alpha) {
+  const cols = Math.floor(w / 12);
+  const rows = Math.floor(h / 18);
+  for (let c = 0; c < cols; c++) {
+    for (let r = 0; r < rows; r++) {
+      if (Math.random() < density) {
+        ctx.fillStyle = `rgba(255,240,180,${alpha * (0.4 + Math.random() * 0.6)})`;
+        ctx.fillRect(x + 4 + c * 12, y + 6 + r * 18, 7, 10);
+      }
+    }
+  }
+}
+
+// Neon glow text
+function neonText(text, x, y, color, size) {
+  ctx.save();
+  ctx.font = `bold ${size}px monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.shadowBlur = 12;
+  ctx.shadowColor = color;
+  ctx.fillStyle = color;
+  ctx.fillText(text, x, y);
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+
+let bgOffX = 0, midOffX = 0, fgOffX = 0;
+
+function drawFrame() {
+  // Sky gradient
+  const sky = ctx.createLinearGradient(0, 0, 0, H * 0.65);
+  sky.addColorStop(0, '#050010');
+  sky.addColorStop(0.5, '#0a001a');
+  sky.addColorStop(1, '#12002a');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H * 0.65);
+
+  // Ground
+  ctx.fillStyle = '#080010';
+  ctx.fillRect(0, H * 0.65, W, H * 0.35);
+
+  // Road
+  ctx.fillStyle = '#0f0020';
+  ctx.fillRect(0, H * 0.78, W, H * 0.22);
+
+  // Road markings
+  ctx.strokeStyle = '#ff00ff44';
+  ctx.lineWidth = 2;
+  for (let i = -2; i < 8; i++) {
+    const rx = ((fgOffX * 0.5 + i * 120) % (W + 120)) - 60;
+    ctx.beginPath(); ctx.moveTo(rx, H*0.82); ctx.lineTo(rx+70, H*0.82); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(rx, H*0.91); ctx.lineTo(rx+70, H*0.91); ctx.stroke();
+  }
+
+  // Parallax offset from mouse
+  const parallax = (mouseX - W / 2) / W;
+
+  // === Layer 1: Background buildings ===
+  BG_BUILDINGS.forEach(b => {
+    const bx = ((b.x - bgOffX + parallax * 20 + W * 2) % (W + 100)) - 50;
+    const by = H * 0.65 - b.h;
+    ctx.fillStyle = b.color;
+    ctx.fillRect(bx, by, b.w, b.h);
+    // Sparse windows
+    drawWindows(bx, by, b.w, b.h, 0.25, 0.5);
+  });
+
+  // === Layer 2: Mid buildings ===
+  MID_BUILDINGS.forEach(b => {
+    const bx = ((b.x - midOffX + parallax * 45 + W * 2) % (W + 160)) - 80;
+    const by = H * 0.65 - b.h;
+    ctx.fillStyle = b.color;
+    ctx.fillRect(bx, by, b.w, b.h);
+    drawWindows(bx, by, b.w, b.h, 0.35, 0.7);
+
+    // Neon signs
+    b.signs.forEach(sign => {
+      const sy = by + sign.y * b.h;
+      ctx.save();
+      ctx.shadowBlur = 18;
+      ctx.shadowColor = sign.color;
+      ctx.fillStyle = sign.color;
+      ctx.font = `bold ${Math.min(13, b.w / sign.text.length * 1.6)}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(sign.text, bx + b.w / 2, sy);
+      ctx.restore();
+    });
+  });
+
+  // Fog / atmosphere
+  const fog = ctx.createLinearGradient(0, H*0.3, 0, H*0.65);
+  fog.addColorStop(0, 'transparent');
+  fog.addColorStop(0.6, 'rgba(80,0,120,0.06)');
+  fog.addColorStop(1, 'rgba(120,0,180,0.12)');
+  ctx.fillStyle = fog;
+  ctx.fillRect(0, 0, W, H);
+
+  // Reflections on road
+  ctx.save();
+  ctx.globalAlpha = 0.2;
+  ctx.scale(1, -0.3);
+  MID_BUILDINGS.forEach(b => {
+    const bx = ((b.x - midOffX + parallax * 45 + W * 2) % (W + 160)) - 80;
+    b.signs.forEach(sign => {
+      ctx.fillStyle = sign.color;
+      ctx.font = `bold 10px monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText(sign.text, bx + b.w/2, -(H*0.78+10));
+    });
+  });
+  ctx.restore();
+
+  // Rain
+  if (rainEnabled) {
+    rainDrops.forEach(drop => {
+      ctx.strokeStyle = `rgba(150,200,255,${drop.alpha})`;
+      ctx.lineWidth = 0.7;
+      ctx.beginPath();
+      ctx.moveTo(drop.x, drop.y);
+      ctx.lineTo(drop.x + drop.len * 0.15, drop.y + drop.len);
+      ctx.stroke();
+    });
+  }
+
+  // Stars
+  ctx.fillStyle = '#ffffff';
+  for (let s = 0; s < 40; s++) {
+    const sx = (s * 197 + bgOffX * 0.1) % W;
+    const sy = (s * 73) % (H * 0.4);
+    const br = 0.3 + 0.7 * ((Math.sin(time * 0.05 + s) + 1) / 2);
+    ctx.globalAlpha = br * 0.7;
+    ctx.fillRect(Math.round(sx), Math.round(sy), 1, 1);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function updateRain() {
+  rainDrops.forEach(drop => {
+    drop.y += drop.speed * speed;
+    drop.x += drop.speed * 0.1 * speed;
+    if (drop.y > H) { drop.y = -drop.len; drop.x = Math.random() * W; }
+  });
+}
+
+function loop() {
+  if (!paused) {
+    time++;
+    bgOffX = (bgOffX + 0.3 * speed) % (W + 100);
+    midOffX = (midOffX + 0.8 * speed) % (W + 160);
+    fgOffX = (fgOffX + 1.6 * speed) % (W + 80);
+    updateRain();
+  }
+  drawFrame();
+  requestAnimationFrame(loop);
+}
+
+canvas.addEventListener('mousemove', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  mouseX = (e.clientX - rect.left) * (W / rect.width);
+});
+
+document.getElementById('playBtn').addEventListener('click', function() {
+  paused = !paused;
+  this.textContent = paused ? '▶ 再生' : '⏸ 停止';
+});
+
+document.getElementById('speedRange').addEventListener('input', function() {
+  speed = parseFloat(this.value);
+});
+
+document.getElementById('rainToggle').addEventListener('change', function() {
+  rainEnabled = this.checked;
+});
+
+loop();
+</script>
+</body>
+</html>
